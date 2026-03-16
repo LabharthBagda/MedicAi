@@ -1,0 +1,12 @@
+node_modules/
+venv/
+backend/venv/
+.env
+__pycache__/
+dist/
+build/
+backend/models/
+*.keras
+*.h5
+*.pt
+*.pth
