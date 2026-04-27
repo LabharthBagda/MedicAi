@@ -1,5 +1,6 @@
 import io
 import base64
+import os
 import glob
 import numpy as np
 import cv2
@@ -36,40 +37,63 @@ app.add_middleware(
 CHEST_MODEL_PATH = "models/chest_model_test.keras"
 BRAIN_MODEL_PATH = "models/brain_model_test.keras"
 
-chest_model = tf.keras.models.load_model(CHEST_MODEL_PATH, compile=False)
-brain_model = tf.keras.models.load_model(BRAIN_MODEL_PATH, compile=False)
+chest_model = None
+brain_model = None
+yolo_model = None
 
 chest_classes = ["COVID", "NORMAL", "PNEUMONIA"]
 brain_classes = ["TUMOR", "NORMAL"]
 
 CONFIDENCE_THRESHOLD = 0.5
 
-# ============================================================
-# Utilities
-# ============================================================
 def find_last_conv_layer(model):
     for layer in reversed(model.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
             return layer.name
     raise ValueError("No Conv2D layer found in model")
 
-CHEST_LAST_CONV_LAYER = find_last_conv_layer(chest_model)
-BRAIN_LAST_CONV_LAYER = find_last_conv_layer(brain_model)
+try:
+    if os.path.exists(CHEST_MODEL_PATH):
+        chest_model = tf.keras.models.load_model(CHEST_MODEL_PATH, compile=False)
+        print(f"Loaded chest model from {CHEST_MODEL_PATH}")
+    else:
+        print(f"Chest model not found at {CHEST_MODEL_PATH}")
+except Exception as e:
+    print(f"Error loading chest model: {e}")
+
+try:
+    if os.path.exists(BRAIN_MODEL_PATH):
+        brain_model = tf.keras.models.load_model(BRAIN_MODEL_PATH, compile=False)
+        print(f"Loaded brain model from {BRAIN_MODEL_PATH}")
+    else:
+        print(f"Brain model not found at {BRAIN_MODEL_PATH}")
+except Exception as e:
+    print(f"Error loading brain model: {e}")
+
+try:
+    weights_files = glob.glob("models/best.pt")
+    if weights_files:
+        yolo_model = YOLO(weights_files[0])
+        print(f"Loaded YOLO model from {weights_files[0]}")
+    else:
+        print("No YOLO bone weights found in models/")
+except Exception as e:
+    print(f"Error loading YOLO model: {e}")
+
+# ============================================================
+# Utilities
+# ============================================================
 
 def preprocess_image(file_bytes, target_size=(224, 224)):
     img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     img = img.resize(target_size)
     img_array = np.array(img, dtype=np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # (1, H, W, C)
+    img_array = np.expand_dims(img_array, axis=0)
     return img, img_array
 
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    """
-    Grad-CAM: Computes heatmap for a given model and image tensor
-    """
     img_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
 
-    # Grad model
     grad_model = tf.keras.models.Model(
         inputs=model.inputs,
         outputs=[model.get_layer(last_conv_layer_name).output, model.output]
@@ -77,18 +101,15 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
 
     with tf.GradientTape() as tape:
         tape.watch(img_tensor)
-        conv_outputs, predictions = grad_model(img_tensor)  # TensorFlow tensors
+        conv_outputs, predictions = grad_model(img_tensor)
 
-        # Ensure predictions is a tensor (if list, convert)
         if isinstance(predictions, list):
             predictions = predictions[0]
 
-        # Determine class index
         if pred_index is None:
             pred_index = tf.argmax(predictions[0])
 
-        # Grab the class score for the predicted index
-        class_channel = predictions[:, pred_index]  # This works because predictions is now tensor
+        class_channel = predictions[:, pred_index]
 
     grads = tape.gradient(class_channel, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -97,7 +118,6 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
     heatmap = tf.maximum(heatmap, 0) / (tf.reduce_max(heatmap) + 1e-8)
 
     return heatmap.numpy()
-
 
 def overlay_heatmap(img, heatmap):
     img_cv = np.array(img)
@@ -114,6 +134,9 @@ def overlay_heatmap(img, heatmap):
 # ============================================================
 @app.post("/predict_chest")
 async def predict_chest(file: UploadFile = File(...)):
+    if chest_model is None:
+        return JSONResponse({"error": "Chest model not loaded. Please add chest_model_test.keras to models/"}, status=500)
+    
     contents = await file.read()
     _, img_array = preprocess_image(contents)
 
@@ -128,6 +151,9 @@ async def predict_chest(file: UploadFile = File(...)):
 
 @app.post("/predict_gradcam_chest")
 async def predict_gradcam_chest(file: UploadFile = File(...)):
+    if chest_model is None:
+        return JSONResponse({"error": "Chest model not loaded. Please add chest_model_test.keras to models/"}, status=500)
+    
     contents = await file.read()
     img, img_array = preprocess_image(contents)
 
@@ -138,7 +164,7 @@ async def predict_gradcam_chest(file: UploadFile = File(...)):
     heatmap = make_gradcam_heatmap(
         img_array,
         chest_model,
-        CHEST_LAST_CONV_LAYER,
+        find_last_conv_layer(chest_model),
         pred_idx,
     )
 
@@ -155,6 +181,9 @@ async def predict_gradcam_chest(file: UploadFile = File(...)):
 # ============================================================
 @app.post("/predict_brain")
 async def predict_brain(file: UploadFile = File(...)):
+    if brain_model is None:
+        return JSONResponse({"error": "Brain model not loaded. Please add brain_model_test.keras to models/"}, status=500)
+    
     contents = await file.read()
     _, img_array = preprocess_image(contents)
 
@@ -170,6 +199,9 @@ async def predict_brain(file: UploadFile = File(...)):
 
 @app.post("/predict_gradcam_brain")
 async def predict_gradcam_brain(file: UploadFile = File(...)):
+    if brain_model is None:
+        return JSONResponse({"error": "Brain model not loaded. Please add brain_model_test.keras to models/"}, status=500)
+    
     contents = await file.read()
     img, img_array = preprocess_image(contents)
 
@@ -182,7 +214,7 @@ async def predict_gradcam_brain(file: UploadFile = File(...)):
     heatmap = make_gradcam_heatmap(
         img_array,
         brain_model,
-        BRAIN_LAST_CONV_LAYER,
+        find_last_conv_layer(brain_model),
         pred_idx,
     )
 
@@ -197,14 +229,11 @@ async def predict_gradcam_brain(file: UploadFile = File(...)):
 # ============================================================
 # YOLO Bone Fracture
 # ============================================================
-weights_files = glob.glob("models/best.pt")
-if not weights_files:
-    raise RuntimeError("No YOLO bone weights found in models/")
-
-yolo_model = YOLO(weights_files[0])
-
 @app.post("/predict_bones")
 async def predict_bones(file: UploadFile = File(...)):
+    if yolo_model is None:
+        return JSONResponse({"error": "YOLO model not loaded. Please add best.pt to models/"}, status=500)
+    
     contents = await file.read()
     img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
@@ -235,3 +264,10 @@ async def predict_bones(file: UploadFile = File(...)):
 @app.get("/")
 def root():
     return {"message": "Medical AI API is running"}
+
+# ============================================================
+# Run Server
+# ============================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

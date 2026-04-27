@@ -1,0 +1,9 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "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",
+    "ANTHROPIC_BASE_URL": "https://integrate.api.nvidia.com/v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "minimaxai/minimax-m2.7",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "minimaxai/minimax-m2.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "minimaxai/minimax-m2.7"
+  }
+}
